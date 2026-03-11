@@ -12,42 +12,48 @@
 #include <time.h>
 #include <unistd.h>
 
-// The first item is possibly reserved for a shmem lock
-#define PAGE_SIZE 2048
-#define NUM_ITEMS (PAGE_SIZE/sizeof(uint8_t))
-#define ITERATIONS 10000
-
+// compare against appropriate __atomic gcc intrinsics
 #define READ_ONCE(p) (*((volatile typeof(p) *)(&p)))
 #define WRITE_ONCE(p, v) (*((volatile typeof(p) *)&p) = v)
+
+#define DEFAULT_ITERATIONS 1000
+#define DEFAULT_SIZE 4096
+static uint64_t iterations = DEFAULT_ITERATIONS;
+static uint64_t sz = DEFAULT_SIZE;
+
+#define NUM_ITEMS (sz / sizeof(uint8_t))
 
 uint64_t get_ts(struct timespec *ts) {
 	return ts->tv_sec * 1000000000 + ts->tv_nsec;
 }
 
 void dump_times(const char *label, struct timespec *times) {
-	size_t count;
-
+//	size_t count;
 //	char *fname;
 //	asprintf(&fname, "%s_%d.txt", label, getpid());
 //	FILE *fp = fopen(fname, "wb");
-//	for (count = 0; count < ITERATIONS; ++count) {
+//	for (count = 0; count < iterations; ++count) {
 //		fprintf(fp, "%zu,", get_ts(&times[count+1]) - get_ts(&times[count]));
 //	}
-	printf("avg time %f ns\n", (get_ts(&times[ITERATIONS]) - get_ts(&times[0]))*1./(ITERATIONS));
 //	fclose(fp);
 //	free(fname);
+
+	/**
+	 * Because of startup issues, skip the first timestamp
+	 */
+	printf("avg time %f ns\n", (get_ts(&times[iterations]) - get_ts(&times[1]))*1./(iterations-1));
 }
 
 void process_sockpair(uint8_t *buf, int fd) {
 	size_t i;
 
-	recv(fd, buf, PAGE_SIZE, 0);
+	recv(fd, buf, sz, 0);
 
 	for (i = 0; i < NUM_ITEMS; ++i) {
 		buf[i] += 1;
 	}
 
-	send(fd, buf, PAGE_SIZE, 0);
+	send(fd, buf, sz, 0);
 }
 
 uint8_t process_shm(uint8_t *buf, uint8_t id) {
@@ -84,11 +90,11 @@ void run_shm_ipc_test(void) {
 	size_t count;
 	struct timespec *times;
 
-	buf = mmap(0, PAGE_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+	buf = mmap(0, sz, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
 	if (!buf)
 		perror("mmap failure");
 
-	memset(buf, 0, PAGE_SIZE*sizeof(*buf));
+	memset(buf, 0, sz*sizeof(*buf));
 
 	pid = fork();
 	printf("process id %d\n", getpid());
@@ -98,14 +104,14 @@ void run_shm_ipc_test(void) {
 	else
 		id = process_shm(buf, 0);
 
-	times = calloc(ITERATIONS+1, sizeof(*times));
+	times = calloc(iterations+1, sizeof(*times));
 	if (!times) {
 		printf("calloc failure in %d, kill the other process too\n", getpid());
 		exit(1);
 	}
 
 	count = 0;
-	while (count < ITERATIONS+1) {
+	while (count < iterations+1) {
 		clock_gettime(CLOCK_MONOTONIC, &times[count]);
 		id = process_shm(buf, id);
 		count += 1;
@@ -113,7 +119,7 @@ void run_shm_ipc_test(void) {
 
 	dump_times("shm_ipc", times);
 	free(times);
-	munmap(buf, PAGE_SIZE);
+	munmap(buf, sz);
 }
 
 void run_sockpair_ipc_test(void) {
@@ -134,24 +140,24 @@ void run_sockpair_ipc_test(void) {
 		fd = sv[1];
 	}
 
-	uint8_t *buf = calloc(1, PAGE_SIZE*sizeof(*buf));
+	uint8_t *buf = calloc(1, sz*sizeof(*buf));
 	if (!buf) {
 		printf("calloc failure in %d, kill the other process too\n", getpid());
 		exit(1);
 	}
 
-	struct timespec *times = calloc(ITERATIONS+1, sizeof(*times));
+	struct timespec *times = calloc(iterations+1, sizeof(*times));
 	if (!times) {
 		printf("calloc failure in %d, kill the other process too\n", getpid());
 		exit(1);
 	}
 
 	if (pid) {
-		send(fd, buf, PAGE_SIZE, 0);
+		send(fd, buf, sz, 0);
 	}
 
 	size_t count;
-	while (count < ITERATIONS + 1) {
+	while (count < iterations+1) {
 		clock_gettime(CLOCK_MONOTONIC, &times[count]);
 		process_sockpair(buf, fd);
 		count += 1;
@@ -178,7 +184,7 @@ void *shm_thread(void *arg) {
 	uint8_t *buf = info->buf;
 	uint8_t id = info->id;
 
-	times = calloc(ITERATIONS+1, sizeof(*times));
+	times = calloc(iterations+1, sizeof(*times));
 	if (!times) {
 		printf("calloc failure in thread\n");
 		exit(1);
@@ -188,7 +194,7 @@ void *shm_thread(void *arg) {
 	id = process_shm(buf, id);
 
 	count = 0;
-	while (count < ITERATIONS+1) {
+	while (count < iterations+1) {
 		clock_gettime(CLOCK_MONOTONIC, &times[count]);
 		id = process_shm(buf, id);
 		count += 1;
@@ -200,7 +206,7 @@ void *shm_thread(void *arg) {
 }
 
 void run_shm_thread_test(void) {
-	uint8_t *buf = calloc(1, PAGE_SIZE*sizeof(*buf));
+	uint8_t *buf = calloc(1, sz*sizeof(*buf));
 	struct thread_info me = {
 		.buf = buf,
 		.id = 0,
@@ -231,7 +237,7 @@ void *shm_thread_sema(void *arg) {
 	sem_t *in = info->in;
 	sem_t *out = info->out;
 
-	times = calloc(ITERATIONS+1, sizeof(*times));
+	times = calloc(iterations+1, sizeof(*times));
 	if (!times) {
 		printf("calloc failure in thread\n");
 		exit(1);
@@ -240,7 +246,7 @@ void *shm_thread_sema(void *arg) {
 	process_sema(buf, in, out);
 
 	count = 0;
-	while (count < ITERATIONS+1) {
+	while (count < iterations+1) {
 		clock_gettime(CLOCK_MONOTONIC, &times[count]);
 		process_sema(buf, in, out);
 		count += 1;
@@ -252,7 +258,7 @@ void *shm_thread_sema(void *arg) {
 }
 
 void run_shm_thread_sema_test(void) {
-	uint8_t *buf = calloc(1, PAGE_SIZE*sizeof(*buf));
+	uint8_t *buf = calloc(1, sz*sizeof(*buf));
 	sem_t sem[2];
 	struct thread_info me = {
 		.buf = buf,
@@ -283,19 +289,50 @@ void run_shm_thread_sema_test(void) {
 	pthread_join(you.tid, &result);
 }
 
+void usage(void) {
+	printf("\n");
+	printf("  ./ipc-bench [opts]\n");
+	printf("\n");
+	printf(" -m [mode]         Run specific test mode, see below\n");
+	printf(" -i [num]          Repeat the test for [num] iterations\n");
+	printf(" -n [num]          Operate on [num] bytes in the buffer\n");
+	printf("\n");
+	printf("  Possible values for mode:\n");
+	printf("    m - shared memory ipc test between two processes (atomic counter)\n");
+	printf("    p - sockpair ipc test between two processes (send/recv)\n");
+	printf("    t - shared memory test between two threads (atomic counter)\n");
+	printf("    x - shared memory test between two threads (semaphore)\n");
+	printf("\n");
+	exit(1);
+}
+
 int main(int argc, char **argv) {
-	if (argc < 2) {
-		printf("\n");
-		printf("  Specify which kind of test to run:\n");
-		printf("    m - shared memory ipc test between two processes (atomic counter)\n");
-		printf("    p - sockpair ipc test between two processes (send/recv)\n");
-		printf("    t - shared memory test between two threads (atomic counter)\n");
-		printf("    x - shared memory test between two threads (semaphore)\n");
-		printf("\n");
-		exit(1);
+	char mode = 'm';
+	int opt;
+
+	while ((opt = getopt(argc, argv, "m:i:n:h")) != -1) {
+		switch (opt) {
+		case 'm':
+			mode = optarg[0];
+			break;
+		case 'i':
+			iterations = strtoul(optarg, NULL, 0);
+			printf("using %lu iterations\n", iterations);
+			break;
+		case 'n':
+			sz = strtoul(optarg, NULL, 0);
+			printf("using %lu alloc size\n", sz);
+			break;
+		default:
+			printf("invalid argument: %c\n", opt);
+			/* fallthrough */
+		case 'h':
+			usage();
+			break;
+		}
 	}
 
-	switch (argv[1][0]) {
+	switch (mode) {
 	case 'm':
 		run_shm_ipc_test();
 		break;
