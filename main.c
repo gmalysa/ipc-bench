@@ -1,3 +1,14 @@
+/**
+ * Small benchmark program to measure the cost of different IPC mechanisms
+ *
+ * By default some of these will only work on multicore machines because they
+ * employ userspace spinlocks.
+ *
+ * Add -D SUPPORT_SINGLE_CORE in order to insert sched_yield(), which has a small
+ * static cost on multicore machines, in order to provide a poor quality userspace
+ * wait
+ */
+
 #define _GNU_SOURCE
 #include <pthread.h>
 #include <sched.h>
@@ -69,9 +80,11 @@ void process_sockpair(uint8_t *buf, int fd, uint8_t check, uint8_t new) {
 uint8_t process_shm(uint8_t *buf, uint8_t check, uint8_t new) {
 	size_t i;
 
-	// optional: sched_yield inside the loop to make it single cpu feasible
-	while (READ_ONCE(buf[0]) != check)
-		;
+	while (READ_ONCE(buf[0]) != check) {
+#ifdef SUPPORT_SINGLE_CORE
+		sched_yield();
+#endif
+	}
 
 	process_buffer(buf, check, new);
 	WRITE_ONCE(buf[0], new);
