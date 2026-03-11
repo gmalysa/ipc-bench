@@ -10,6 +10,7 @@
  */
 
 #define _GNU_SOURCE
+#include <math.h>
 #include <pthread.h>
 #include <sched.h>
 #include <semaphore.h>
@@ -38,21 +39,42 @@ uint64_t get_ts(struct timespec *ts) {
 	return ts->tv_sec * 1000000000 + ts->tv_nsec;
 }
 
-void dump_times(const char *label, struct timespec *times) {
-//	size_t count;
-//	char *fname;
-//	asprintf(&fname, "%s_%d.txt", label, getpid());
-//	FILE *fp = fopen(fname, "wb");
-//	for (count = 0; count < iterations; ++count) {
-//		fprintf(fp, "%zu,", get_ts(&times[count+1]) - get_ts(&times[count]));
-//	}
-//	fclose(fp);
-//	free(fname);
+void dump_times(const char *label, struct timespec *times, uint8_t extra) {
+	size_t count;
+	char *fname;
+	int res;
 
-	/**
-	 * Because of startup issues, skip the first timestamp
-	 */
-	printf("avg time %f ns\n", (get_ts(&times[iterations]) - get_ts(&times[1]))*1./(iterations-1));
+	res = asprintf(&fname, "%s_%d-%d.txt", label, getpid(), extra);
+	(void)res;
+
+	FILE *fp = fopen(fname, "wb");
+	for (count = 0; count < iterations; ++count) {
+		fprintf(fp, "%zu,", get_ts(&times[count+1]) - get_ts(&times[count]));
+	}
+	fclose(fp);
+	free(fname);
+
+	char *avgstr;
+
+	double avg = (get_ts(&times[iterations]) - get_ts(&times[0]))*1./(iterations);
+	res = asprintf(&avgstr, "avg %f ns", avg);
+	(void)res;
+
+	double acc = 0.0;
+	for (size_t i = 1; i < iterations+1; ++i) {
+		double delta = get_ts(&times[i]) - get_ts(&times[i-1]);
+		double incr = delta - avg;
+		acc += incr*incr;
+	}
+
+	char *varstr;
+	// note: sample variance / n-1
+	res = asprintf(&varstr, "stddev %f ns", sqrt(acc / (iterations-1)));
+	(void)res;
+	printf("%s, %s\n", avgstr, varstr);
+
+	free(varstr);
+	free(avgstr);
 }
 
 /**
@@ -136,7 +158,7 @@ void run_shm_ipc_test(void) {
 		count += 1;
 	}
 
-	dump_times("shm_ipc", times);
+	dump_times("shm_ipc", times, 0);
 	free(times);
 	munmap(buf, sz);
 }
@@ -187,7 +209,7 @@ void run_sockpair_ipc_test(void) {
 		count += 1;
 	}
 
-	dump_times("sockpair_ipc", times);
+	dump_times("sockpair_ipc", times, 0);
 	free(times);
 	free(buf);
 	close(fd);
@@ -224,7 +246,7 @@ void *shm_thread(void *arg) {
 		count += 1;
 	}
 
-	dump_times("shm_thread_spinlock", times);
+	dump_times("shm_thread_spinlock", times, id);
 	free(times);
 	return NULL;
 }
@@ -277,7 +299,7 @@ void *shm_thread_sema(void *arg) {
 		count += 1;
 	}
 
-	dump_times("shm_thread_sema", times);
+	dump_times("shm_thread_sema", times, id);
 	free(times);
 	return NULL;
 }
@@ -356,6 +378,11 @@ int main(int argc, char **argv) {
 			break;
 		}
 	}
+
+	printf("note that these numbers are provided for convenience but you need\n");
+	printf("to look at a histogram of the csv data produced in the output file\n");
+	printf("to understand why they are not meaningful.\n");
+	printf("hint: the data is multi-modal\n");
 
 	switch (mode) {
 	case 'm':
