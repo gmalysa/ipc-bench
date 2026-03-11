@@ -44,42 +44,46 @@ void dump_times(const char *label, struct timespec *times) {
 	printf("avg time %f ns\n", (get_ts(&times[iterations]) - get_ts(&times[1]))*1./(iterations-1));
 }
 
-void process_sockpair(uint8_t *buf, int fd) {
+/**
+ * The first entry in the buffer is always skipped because in the shm version
+ * it is used for a shared spinlock
+ */
+void process_buffer(uint8_t *buf, uint8_t check, uint8_t new) {
 	size_t i;
 
-	recv(fd, buf, sz, 0);
-
-	for (i = 0; i < NUM_ITEMS; ++i) {
-		buf[i] += 1;
+	for (i = 1; i < NUM_ITEMS; ++i) {
+		if (buf[i] != check) {
+			printf("buffer failure in position %zu\n", i);
+			exit(1);
+		}
+		buf[i] = new;
 	}
+}
 
+void process_sockpair(uint8_t *buf, int fd, uint8_t check, uint8_t new) {
+	recv(fd, buf, sz, 0);
+	process_buffer(buf, check, new);
 	send(fd, buf, sz, 0);
 }
 
-uint8_t process_shm(uint8_t *buf, uint8_t id) {
+uint8_t process_shm(uint8_t *buf, uint8_t check, uint8_t new) {
 	size_t i;
 
 	// optional: sched_yield inside the loop to make it single cpu feasible
-	while (READ_ONCE(buf[0]) != id)
+	while (READ_ONCE(buf[0]) != check)
 		;
 
-	for (i = 1; i < NUM_ITEMS; ++i) {
-		buf[i] += 1;
-	}
-
-	WRITE_ONCE(buf[0], id + 1);
-	return id + 2;
+	process_buffer(buf, check, new);
+	WRITE_ONCE(buf[0], new);
 }
 
-uint8_t process_sema(uint8_t *buf, sem_t *in, sem_t *out) {
+uint8_t process_sema(uint8_t *buf, sem_t *in, sem_t *out, uint8_t check,
+	uint8_t new)
+{
 	size_t i;
 
 	sem_wait(in);
-
-	for (i = 1; i < NUM_ITEMS; ++i) {
-		buf[i] += 1;
-	}
-
+	process_buffer(buf, check, new);
 	sem_post(out);
 }
 
@@ -100,9 +104,11 @@ void run_shm_ipc_test(void) {
 	printf("process id %d\n", getpid());
 
 	if (0 == pid)
-		id = process_shm(buf, 1);
+		id = 1;
 	else
-		id = process_shm(buf, 0);
+		id = 0;
+
+	process_shm(buf, id, 1-id);
 
 	times = calloc(iterations+1, sizeof(*times));
 	if (!times) {
@@ -113,7 +119,7 @@ void run_shm_ipc_test(void) {
 	count = 0;
 	while (count < iterations+1) {
 		clock_gettime(CLOCK_MONOTONIC, &times[count]);
-		id = process_shm(buf, id);
+		process_shm(buf, id, 1-id);
 		count += 1;
 	}
 
@@ -126,6 +132,7 @@ void run_sockpair_ipc_test(void) {
 	pid_t pid;
 	int sv[2];
 	int fd;
+	uint8_t check, new;
 
 	if (socketpair(AF_UNIX, SOCK_DGRAM, 0, sv) < 0) {
 		perror("failed to create socket pair");
@@ -135,9 +142,13 @@ void run_sockpair_ipc_test(void) {
 	pid = fork();
 	if (0 == pid) {
 		fd = sv[0];
+		check = 1;
+		new = 0;
 	}
 	else {
 		fd = sv[1];
+		check = 0;
+		new = 1;
 	}
 
 	uint8_t *buf = calloc(1, sz*sizeof(*buf));
@@ -152,14 +163,14 @@ void run_sockpair_ipc_test(void) {
 		exit(1);
 	}
 
-	if (pid) {
+	if (0 == pid) {
 		send(fd, buf, sz, 0);
 	}
 
 	size_t count;
 	while (count < iterations+1) {
 		clock_gettime(CLOCK_MONOTONIC, &times[count]);
-		process_sockpair(buf, fd);
+		process_sockpair(buf, fd, check, new);
 		count += 1;
 	}
 
@@ -191,12 +202,12 @@ void *shm_thread(void *arg) {
 	}
 
 	// sync thread start points
-	id = process_shm(buf, id);
+	process_shm(buf, id, 1-id);
 
 	count = 0;
 	while (count < iterations+1) {
 		clock_gettime(CLOCK_MONOTONIC, &times[count]);
-		id = process_shm(buf, id);
+		process_shm(buf, id, 1-id);
 		count += 1;
 	}
 
@@ -234,6 +245,7 @@ void *shm_thread_sema(void *arg) {
 	struct timespec *times;
 	struct thread_info *info = arg;
 	uint8_t *buf = info->buf;
+	uint8_t id = info->id;
 	sem_t *in = info->in;
 	sem_t *out = info->out;
 
@@ -243,12 +255,12 @@ void *shm_thread_sema(void *arg) {
 		exit(1);
 	}
 
-	process_sema(buf, in, out);
+	process_sema(buf, in, out, id, 1-id);
 
 	count = 0;
 	while (count < iterations+1) {
 		clock_gettime(CLOCK_MONOTONIC, &times[count]);
-		process_sema(buf, in, out);
+		process_sema(buf, in, out, id, 1-id);
 		count += 1;
 	}
 
