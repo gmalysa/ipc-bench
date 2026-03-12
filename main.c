@@ -35,6 +35,8 @@ static uint64_t sz = DEFAULT_SIZE;
 
 #define NUM_ITEMS (sz / sizeof(uint8_t))
 
+static char *folder = ".";
+
 uint64_t get_ts(struct timespec *ts) {
 	return ts->tv_sec * 1000000000 + ts->tv_nsec;
 }
@@ -44,7 +46,7 @@ void dump_times(const char *label, struct timespec *times, uint8_t extra) {
 	char *fname;
 	int res;
 
-	res = asprintf(&fname, "%s_%d-%d.txt", label, getpid(), extra);
+	res = asprintf(&fname, "%s/%s_%d-%d.txt", folder, label, getpid(), extra);
 	(void)res;
 
 	FILE *fp = fopen(fname, "wb");
@@ -340,6 +342,7 @@ void usage(void) {
 	printf("\n");
 	printf("  ./ipc-bench [opts]\n");
 	printf("\n");
+	printf(" -f [name]         Folder prefix for output, default .\n");
 	printf(" -m [mode]         Run specific test mode, see below\n");
 	printf(" -i [num]          Repeat the test for [num] iterations\n");
 	printf(" -n [num]          Operate on [num] bytes in the buffer\n");
@@ -357,8 +360,11 @@ int main(int argc, char **argv) {
 	char mode = 'm';
 	int opt;
 
-	while ((opt = getopt(argc, argv, "m:i:n:h")) != -1) {
+	while ((opt = getopt(argc, argv, "f:m:i:n:h")) != -1) {
 		switch (opt) {
+		case 'f':
+			folder = optarg;
+			break;
 		case 'm':
 			mode = optarg[0];
 			break;
