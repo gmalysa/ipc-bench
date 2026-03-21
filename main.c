@@ -96,9 +96,10 @@ void process_buffer(uint8_t *buf, uint8_t check, uint8_t new) {
 }
 
 void process_sockpair(uint8_t *buf, int fd, uint8_t check, uint8_t new) {
-	recv(fd, buf, sz, 0);
+	uint32_t msg = 0;
+	recv(fd, &msg, sizeof(msg), 0);
 	process_buffer(buf, check, new);
-	send(fd, buf, sz, 0);
+	send(fd, &msg, sizeof(msg), 0);
 }
 
 uint8_t process_shm(uint8_t *buf, uint8_t check, uint8_t new) {
@@ -167,9 +168,14 @@ void run_shm_ipc_test(void) {
 
 void run_sockpair_ipc_test(void) {
 	pid_t pid;
+	uint8_t *buf;
 	int sv[2];
 	int fd;
 	uint8_t check, new;
+
+	buf = mmap(0, sz, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+	if (!buf)
+		perror("mmap failure");
 
 	if (socketpair(AF_UNIX, SOCK_DGRAM, 0, sv) < 0) {
 		perror("failed to create socket pair");
@@ -186,12 +192,6 @@ void run_sockpair_ipc_test(void) {
 		fd = sv[1];
 		check = 0;
 		new = 1;
-	}
-
-	uint8_t *buf = calloc(1, sz*sizeof(*buf));
-	if (!buf) {
-		printf("calloc failure in %d, kill the other process too\n", getpid());
-		exit(1);
 	}
 
 	struct timespec *times = calloc(iterations+1, sizeof(*times));
@@ -213,7 +213,6 @@ void run_sockpair_ipc_test(void) {
 
 	dump_times("sockpair_ipc", times, 0);
 	free(times);
-	free(buf);
 	close(fd);
 }
 
